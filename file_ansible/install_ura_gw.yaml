@@ -1,0 +1,252 @@
+---
+- name: Application Installation Asterisk
+  hosts: producao
+  become: true
+  vars:
+    asterisk_url: "https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-20-current.tar.gz"
+    destino_tar: "/usr/src/asterisk-20-current.tar.gz"
+    pasta_destino: "/usr/src"
+    pasta_asterisk: "/usr/src/asterisk-20.*"
+  
+  tasks:     
+    # Atualização de pacotes
+    - name: Update cache APT
+      apt:
+        update_cache: yes
+      become: yes
+      when: ansible_os_family in ["Debian"]
+
+    - name: Update pkg
+      apt:
+        upgrade: yes
+      become: yes
+      when: ansible_os_family in ["Debian"]
+        
+    # Instalação de pacotes
+    - name: Install packages depending on the SO
+      package:
+        name:
+          - vim          
+          - htop
+          - sngrep
+          - tcpdump          
+          - netcat
+          - php-common
+          - php7.3
+          - php7.3-cli 
+          - php7.3-common 
+          - php7.3-curl 
+          - php7.3-fpm 
+          - php7.3-gd 
+          - php7.3-json 
+          - php7.3-mbstring 
+          - php7.3-opcache  
+          - php7.3-readline 
+          - php7.3-xml 
+          - php7.3-zip
+        state: present
+      become: yes
+      when: ansible_os_family in ["Debian"]  
+
+    # Debug após download do Asterisk
+    - name: Baixar Asterisk .tar.gz
+      get_url:
+        url: "{{ asterisk_url }}"
+        dest: "{{ destino_tar }}"
+        mode: '0644'
+      register: download_result
+
+    - name: Debug do download
+      debug:
+        msg: |
+          Arquivo baixado: {{ download_result.dest }}
+          Tamanho: {{ download_result.size }} bytes
+          Status: {{ download_result.state }}
+
+    # Debug após descompactação
+    - name: Descompactar o .tar.gz do Asterisk
+      ansible.builtin.unarchive:
+        src: "{{ destino_tar }}"
+        dest: "{{ pasta_destino }}"
+        remote_src: yes
+      register: unarchive_result
+
+    - name: Descompactar o .tar.gz do Asterisk
+      ansible.builtin.unarchive:
+        src: "{{ destino_tar }}"
+        dest: "{{ pasta_destino }}"
+        remote_src: yes
+      register: unarchive_result
+
+    - name: Encontrar diretório extraído do Asterisk
+      find:
+        paths: /usr/src/
+        patterns: "asterisk-20.*"
+        file_type: directory
+      register: resultado_find
+
+    - name: Garantir permissão de execução no install_prereq
+      file:
+        path: "{{ item.path }}/contrib/scripts/install_prereq"
+        mode: '0755'
+      become: true
+      when: item.path is defined
+      loop: "{{ resultado_find.files }}"
+
+    - name: Executar script install_prereq
+      shell: ./contrib/scripts/install_prereq install
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      when: item.path is defined
+      loop: "{{ resultado_find.files }}"
+
+    - name: Executar ./configure
+      shell: ./configure
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      loop: "{{ resultado_find.files }}"
+      register: configure_result
+
+    - name: Compilar com make
+      shell: make 
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      loop: "{{ resultado_find.files }}"
+      register: make_result
+
+    - name: make install
+      shell: make install
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      loop: "{{ resultado_find.files }}"
+      register: make_install_result
+
+    - name: make samples
+      shell: make samples
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      loop: "{{ resultado_find.files }}"
+      register: make_samples_result
+
+    - name: make config
+      shell: make config
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      loop: "{{ resultado_find.files }}"
+      register: make_config_result
+
+    - name: make bininstall
+      shell: make bininstall
+      args:
+        chdir: "{{ item.path }}"
+      become: true
+      loop: "{{ resultado_find.files }}"
+      register: make_bininstall_result
+
+    - name: Esperar serviço Asterisk subir e rodar por 20 segundos (teste)
+      shell: timeout 20 asterisk -vvvvcg
+      become: true
+      ignore_errors: true  # para evitar falha se o comando sair com erro ao finalizar
+
+    - name: Sincronizar arquivos
+      ansible.builtin.command: cp -rp /usr/src/file/extend /home
+
+    - name: Copiar o arquvio de codec g729
+      ansible.builtin.command: cp -rp /usr/src/file/codec_g729a.so /usr/lib/asterisk/modules/
+
+    - name: Copiar arquvivo de inicializacao
+      ansible.builtin.command: cp -rp /usr/src/file/asterisk /etc/init.d/
+
+    - name: Copiar arquivos de configuracao do asterisk
+      ansible.builtin.shell: cp -a /usr/src/file/config/* /etc/asterisk/
+
+    - name: Habilitar Asterisk no boot com update-rc.d
+      shell: |
+        cd /etc/init.d/
+        update-rc.d asterisk defaults
+      become: true
+
+    - name: Ativar e iniciar serviço Asterisk
+      shell: |
+        systemctl enable asterisk
+        systemctl start asterisk
+      become: true
+
+    - name: Verificar status do serviço Asterisk
+      shell: systemctl status asterisk
+      become: true
+      register: status_asterisk
+
+    - name: Exibir status final do Asterisk
+      debug:
+        msg: "{{ status_asterisk.stdout_lines }}"
+
+    - name: Registrar o serviço Asterisk com update-rc.d
+      shell: |
+        cd /etc/init.d/
+        update-rc.d asterisk defaults
+      args:
+        warn: false
+      ignore_errors: true
+
+    - name: Habilitar o serviço Asterisk no boot
+      ansible.builtin.systemd:
+        name: asterisk
+        enabled: yes
+
+    - name: Iniciar o serviço Asterisk
+      ansible.builtin.systemd:
+        name: asterisk
+        state: started
+
+    - name: Verificar status do Asterisk
+      shell: systemctl status asterisk
+      register: status_asterisk
+      ignore_errors: true
+
+    - name: Exibir status do Asterisk
+      debug:
+        msg: "{{ status_asterisk.stdout_lines | join('\n') }}"
+
+    - name: Subindo o asterisk
+      shell: |
+        /etc/init.d/asterisk start
+      become: true
+      args:
+        warn: false
+      ignore_errors: true
+###
+    - name: Verificar servico Asterisk 
+      ansible.builtin.shell: systemctl is-active asterisk
+      register: estado_asterisk
+      changed_when: false
+      ignore_errors: true
+
+    - name: Mostrar status do serviço Asterisk
+      ansible.builtin.debug:
+        msg: "Status do Asterisk: {{ estado_asterisk.stdout | default('Erro ao verificar') }}"
+
+    - name: Verificar porta UDP 5060 
+      ansible.builtin.shell: "ss -lun | grep ':5060 '"
+      register: resultado_ss
+      changed_when: false
+      ignore_errors: true
+
+    - name: Definir status da porta UDP 5060
+      set_fact:
+        mensagem_porta_5060: >-
+          {% if resultado_ss.stdout != '' %}
+            ✅ Porta UDP 5060 está escutando (Asterisk possivelmente OK)
+          {% else %}
+            ❌ Porta UDP 5060 não está escutando. Verifique o Asterisk.
+          {% endif %}
+
+    - name: Mostrar status da porta 5060 (UDP)
+      debug:
+        msg: "{{ mensagem_porta_5060 }}"
